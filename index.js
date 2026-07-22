@@ -17,6 +17,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const fs = require("fs");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const QRCode = require("qrcode");
@@ -132,11 +133,76 @@ app.get("/qr", async (req, res) => {
   }
 });
 
+// GET /reset —_endpoint de rescate para forzar un QR nuevo.
+//
+// Caso de uso: al reiniciar el servicio en Render, whatsapp-web.js
+// intenta restaurar la sesión de LocalAuth. Si la sesión está trunca
+// o corrupta, el cliente se queda trabado sin generar QR nuevo y
+// clientReady queda en false para siempre.
+//
+// Solución: este endpoint borra la carpeta de sesión y reinicia el
+// cliente desde cero, forzando la emisión de un QR fresco.
+//
+// Después de llamarlo, redirige a /qr para que el admin escanee.
+app.get("/reset", async (req, res) => {
+  try {
+    console.log(`[${timestamp()}] 🔄 Reset solicitado — limpiando sesión y reiniciando cliente...`);
+
+    // Resetear estado global
+    clientReady = false;
+    lastQR = null;
+
+    // Destruir el cliente actual de Puppeteer (cierra el browser headless)
+    if (client) {
+      try {
+        await client.destroy();
+        console.log(`[${timestamp()}]   ✓ Cliente destruido`);
+      } catch (e) {
+        console.log(`[${timestamp()}]   ⚠️ Error destruyendo cliente (no bloqueante): ${e.message}`);
+      }
+    }
+
+    // Eliminar la carpeta de sesión persistente para borrar la sesión trunca
+    const sessionPath = "./whatsapp-session";
+    if (fs.existsSync(sessionPath)) {
+      fs.rmSync(sessionPath, { recursive: true, force: true });
+      console.log(`[${timestamp()}]   🗑️ Carpeta de sesión eliminada correctamente`);
+    } else {
+      console.log(`[${timestamp()}]   ℹ️ No había carpeta de sesión previa`);
+    }
+
+    // Volver a inicializar el cliente de WhatsApp desde cero
+    initWhatsAppClient();
+
+    // Responder con HTML que redirige a /qr en 5 segundos (tiempo prudencial
+    // para que el cliente termine de inicializar y genere el primer QR)
+    res.send(`
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Reseteando sesión - REP WhatsApp Bot</title>
+    <meta http-equiv="refresh" content="5;url=/qr">
+  </head>
+  <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;margin:0;">
+    <div style="background:white;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);display:inline-block;">
+      <h2 style="color:#059669;margin-top:0;">🔄 Sesión reseteada con éxito</h2>
+      <p style="color:#64748b;">Redirigiendo a la página del QR en 5 segundos...</p>
+      <p style="color:#94a3b8;font-size:12px;">Si no se redirige automáticamente, <a href="/qr" style="color:#059669;">hacé clic acá</a>.</p>
+    </div>
+  </body>
+</html>`);
+  } catch (err) {
+    console.error(`[${timestamp()}] ❌ Error reseteando sesión:`, err?.message || err);
+    res.status(500).send("Error reseteando sesión: " + (err?.message || err));
+  }
+});
+
 const server = app.listen(PORT, () => {
   console.log(`[${timestamp()}] 🌐 Servidor HTTP escuchando en puerto ${PORT}`);
   console.log(`[${timestamp()}]   Health check: http://localhost:${PORT}/health`);
   console.log(`[${timestamp()}]   Status:        http://localhost:${PORT}/status`);
-  console.log(`[${timestamp()}]   QR (texto):    http://localhost:${PORT}/qr`);
+  console.log(`[${timestamp()}]   QR (imagen):   http://localhost:${PORT}/qr`);
+  console.log(`[${timestamp()}]   Reset sesión:  http://localhost:${PORT}/reset`);
 });
 
 // === Helper: timestamp con hora Argentina para logs ===
