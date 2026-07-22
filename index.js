@@ -261,13 +261,23 @@ function initWhatsAppClient() {
     }),
     puppeteer: {
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
+        "--disable-dev-shm-usage", // OBLIGATORIO para Docker/Render (evita colapsos de memoria compartida)
         "--disable-accelerated-2d-canvas",
+        "--no-first-run",
+        "--no-zygote",
         "--disable-gpu",
-        "--window-size=1920x1080",
+        "--disable-extensions",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-web-security",
+        "--disable-site-isolation-trials",
+        "--no-experiments",
+        "--ignore-certificate-errors",
+        "--js-flags=--max-old-space-size=256", // Limita la memoria JavaScript de Chromium a 256MB max
       ],
     },
   });
