@@ -23,8 +23,3 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-
-# Docker
-Dockerfile
-.dockerignore
-docker-compose.yml

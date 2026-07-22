@@ -1,0 +1,14 @@
+node_modules
+whatsapp-session
+.wwebjs_auth
+.env
+.env.local
+.env.production
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+.git
+.gitignore
