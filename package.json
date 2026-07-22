@@ -1,0 +1,32 @@
+{
+  "name": "rep-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Microservicio WhatsApp Web 24/7 con Guardia Nocturna para Red Escucha Psicológica (REP)",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.23.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "rep",
+    "red-escucha-psicologica",
+    "guardia-nocturna",
+    "ia"
+  ],
+  "author": "Red Escucha Psicológica",
+  "license": "MIT"
+}
