@@ -19,6 +19,7 @@ require("dotenv").config();
 const express = require("express");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 const axios = require("axios");
 const { formatInTimeZone } = require("date-fns-tz");
 
@@ -71,15 +72,64 @@ app.get("/status", (req, res) => {
   });
 });
 
-// GET /qr — devuelve el último QR como texto plano (útil si no tenés
-// acceso a los logs de Render/Railway y necesitás escanear desde el browser)
-app.get("/qr", (req, res) => {
-  if (!lastQR) {
-    return res
-      .status(404)
-      .send("No hay QR disponible. El cliente ya está autenticado o todavía no se generó.");
+// GET /qr — devuelve el QR como imagen HTML con auto-refresh.
+// La página se actualiza sola cada 12 segundos para mostrar el QR más
+// reciente (WhatsApp invalida el QR a los ~60s). Cuando el cliente ya
+// está vinculado, muestra una pantalla verde de éxito.
+app.get("/qr", async (req, res) => {
+  // Si ya está conectado, mostrar estado de éxito
+  if (clientReady) {
+    return res.send(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>REP WhatsApp - Estado</title>
+    <meta http-equiv="refresh" content="10">
+  </head>
+  <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;background:#f0f2f5;margin:0;">
+    <div style="text-align:center;background:white;padding:30px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+      <h2 style="color:#059669;margin-top:0;">✅ ¡WhatsApp ya está vinculado y listo!</h2>
+      <p style="color:#64748b;">El bot de la Red de Escucha Psicológica está activo.</p>
+    </div>
+  </body>
+</html>`);
   }
-  res.type("text/plain").send(lastQR);
+
+  // Si todavía no hay QR generado, mostrar "cargando" con auto-refresh
+  if (!lastQR) {
+    return res.send(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>Generando QR...</title>
+    <meta http-equiv="refresh" content="5">
+  </head>
+  <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;background:#f0f2f5;margin:0;">
+    <h2 style="color:#1e293b;">Aguardá un momento, generando código QR...</h2>
+  </body>
+</html>`);
+  }
+
+  // Generar imagen QR como Data URL (Base64) y servir como HTML
+  try {
+    const qrImageUrl = await QRCode.toDataURL(lastQR);
+    res.send(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>Escanear QR - REP WhatsApp Bot</title>
+    <meta http-equiv="refresh" content="12">
+  </head>
+  <body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;background:#f0f2f5;margin:0;">
+    <div style="text-align:center;background:white;padding:30px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.1);max-width:360px;">
+      <h2 style="margin-top:0;color:#1e293b;">Vincular WhatsApp REP</h2>
+      <p style="color:#64748b;font-size:14px;">Abrí WhatsApp Business ➔ Dispositivos vinculados ➔ Vincular dispositivo</p>
+      <img src="${qrImageUrl}" alt="Código QR WhatsApp" style="width:260px;height:260px;border:1px solid #e2e8f0;border-radius:8px;padding:8px;" />
+      <p style="color:#94a3b8;font-size:12px;margin-bottom:0;">La página se actualiza automáticamente cada 12s.</p>
+    </div>
+  </body>
+</html>`);
+  } catch (err) {
+    console.error(`[${timestamp()}] ❌ Error generando imagen QR:`, err?.message || err);
+    res.status(500).send("Error generando imagen QR");
+  }
 });
 
 const server = app.listen(PORT, () => {
