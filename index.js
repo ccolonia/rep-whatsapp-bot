@@ -347,27 +347,19 @@ function initWhatsAppClient() {
       // Guarda la sesión en ./whatsapp-session/ para no pedir QR en cada restart
       dataPath: "./whatsapp-session",
     }),
-    // === webVersionCache: forzar versión específica de WhatsApp Web ===
-    // SIN esto, whatsapp-web.js intenta cargar la versión actual de WhatsApp Web
-    // que a veces cambia su interfaz y los selectores internos no matchean,
-    // dejando el cliente colgado en 'authenticated' pero sin disparar 'ready'.
+    // === webVersionCache REMOVIDO ===
+    // Antes apuntábamos a una versión alpha del mirror wppconnect-team
+    // (2.3000.1040310160-alpha.html). Esa versión NO era compatible con
+    // whatsapp-web.js 1.23.0 y causaba LOGOUT inmediato al escanear el QR.
     //
-    // La versión se elige del mirror público de wppconnect-team:
+    // Sin webVersionCache, whatsapp-web.js carga la versión LIVE de
+    // web.whatsapp.com. Esto es lo más estable porque siempre usa la
+    // versión actual que WhatsApp sirve oficialmente.
+    //
+    // Si en el futuro WhatsApp rompe compatibilidad con whatsapp-web.js,
+    // podemos volver a habilitar webVersionCache apuntando a una versión
+    // estable NO-alpha del mirror. Ver:
     //   https://github.com/wppconnect-team/wa-version/tree/main/html
-    //
-    // IMPORTANTE: la versión debe EXISTIR en ese mirror. Si no existe,
-    // el fetch devuelve 404 y el cliente se queda colgado para siempre.
-    // Listá versiones disponibles con:
-    //   curl -s "https://api.github.com/repos/wppconnect-team/wa-version/contents/html?ref=main" | grep '"name"'
-    //
-    // La versión se puede overridear con la variable de entorno
-    // WA_WEB_VERSION para cambiarla sin redeploy.
-    webVersionCache: {
-      type: "remote",
-      remotePath:
-        process.env.WA_WEB_VERSION_URL ||
-        "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1040310160-alpha.html",
-    },
     puppeteer: puppeteerConfig,
   });
 
@@ -408,10 +400,39 @@ function initWhatsAppClient() {
   });
 
   // === Evento: desconexión ===
-  client.on("disconnected", (reason) => {
+  // Manejo diferenciado según el motivo:
+  // - LOGOUT: WhatsApp invalidó la sesión (sesión corrupta o versión
+  //   incompatible). Hay que borrar la carpeta de sesión antes de
+  //   reinitializar, sino vuelve a LOGOUT en loop.
+  // - Otros (TIMEOUT, NAVIGATION, etc.): la sesión sigue válida,
+  //   solo reconectar sin borrar nada.
+  client.on("disconnected", async (reason) => {
     clientReady = false;
     isInitializing = false; // Liberar lock para permitir reintento
     console.warn(`[${timestamp()}] 🔌 Cliente desconectado: ${reason}`);
+
+    // Si es LOGOUT, borrar la sesión para que el próximo init pida QR nuevo
+    if (reason === "LOGOUT") {
+      console.warn(`[${timestamp()}]    ⚠️ LOGOUT detectado — borrando sesión corrupta...`);
+      try {
+        // Destruir el cliente async antes de borrar la carpeta
+        if (client) {
+          try { await client.destroy(); } catch (e) { /* ignore */ }
+          client = null;
+        }
+        // Esperar 2s a que Chromium libere el lock
+        await new Promise((r) => setTimeout(r, 2000));
+        // Borrar carpeta de sesión
+        const sessionPath = "./whatsapp-session";
+        if (fs.existsSync(sessionPath)) {
+          fs.rmSync(sessionPath, { recursive: true, force: true });
+          console.warn(`[${timestamp()}]    🗑️ Sesión corrupta eliminada`);
+        }
+      } catch (e) {
+        console.warn(`[${timestamp()}]    ⚠️ Error limpiando sesión: ${e.message}`);
+      }
+    }
+
     console.warn(`[${timestamp()}]    Reintentando en 10 segundos...`);
     setTimeout(() => {
       console.log(`[${timestamp()}] 🔄 Reinicializando cliente...`);
