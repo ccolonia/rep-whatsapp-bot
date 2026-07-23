@@ -357,6 +357,21 @@ function initWhatsAppClient() {
     return;
   }
   isInitializing = true;
+  const initStartTime = Date.now();
+
+  // === Watchdog: si después de 90s el cliente sigue inicializando,
+  // forzar un reset para no quedar trancado para siempre.
+  // Esto puede pasar cuando la sesión está corrupta pero el evento
+  // 'disconnected' no se dispara.
+  const watchdogTimer = setTimeout(() => {
+    if (isInitializing && !clientReady) {
+      console.warn(`[${timestamp()}] ⏰ Watchdog: cliente trancado en inicialización por 90s — forzando reset`);
+      isInitializing = false;
+      // No llamar a /reset directamente porque puede causar loop.
+      // Solo loguear para que el admin vea que hay que resetear manualmente.
+      console.warn(`[${timestamp()}]    Llamá a /reset para limpiar y reintentar.`);
+    }
+  }, 90000);
 
   console.log(`[${timestamp()}] 🚀 Inicializando cliente de WhatsApp Web...`);
 
@@ -379,6 +394,12 @@ function initWhatsAppClient() {
   const puppeteerConfig = {
     headless: true, // headless: true = modo nuevo de Puppeteer (sin 'new')
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
+    // === Logs de Chromium a consola para diagnóstico ===
+    // Sin esto no vemos qué hace Chromium internamente. Si hay errores
+    // de red, de certificados, de scripts, etc., aparecen acá.
+    dumpio: true,
+    // === Timeouts más largos para Render (contenedor lento) ===
+    protocolTimeout: 120000, // 2 min para respuestas del protocolo CDP
     args: [
       // === Sandbox / seguridad ===
       "--no-sandbox",
@@ -480,6 +501,7 @@ function initWhatsAppClient() {
   client.on("ready", () => {
     clientReady = true;
     isInitializing = false; // Liberar lock — la inicialización terminó OK
+    clearTimeout(watchdogTimer); // Cancelar watchdog — ya llegó a ready
     console.log(`[${timestamp()}] 🚀 READY: Cliente de WhatsApp 100% activo (clientReady = true)`);
     const info = client.info || {};
     console.log(`[${timestamp()}]    Cuenta: ${info.pushname || "N/A"} (${info.wid?.user || "N/A"})`);
@@ -489,6 +511,7 @@ function initWhatsAppClient() {
   client.on("auth_failure", (msg) => {
     clientReady = false;
     isInitializing = false; // Liberar lock para permitir reintento
+    clearTimeout(watchdogTimer); // Cancelar watchdog
     console.error(`[${timestamp()}] ❌ Error de autenticación: ${msg}`);
     console.error(`[${timestamp()}]    Llamá al endpoint /reset para borrar la sesión y volver a escanear el QR.`);
   });
@@ -503,6 +526,7 @@ function initWhatsAppClient() {
   client.on("disconnected", async (reason) => {
     clientReady = false;
     isInitializing = false; // Liberar lock para permitir reintento
+    clearTimeout(watchdogTimer); // Cancelar watchdog
     console.warn(`[${timestamp()}] 🔌 Cliente desconectado: ${reason}`);
 
     // Si es LOGOUT, borrar la sesión para que el próximo init pida QR nuevo
@@ -563,6 +587,7 @@ function initWhatsAppClient() {
   // para que un próximo /reset pueda intentar de nuevo.
   client.initialize().catch((err) => {
     isInitializing = false;
+    clearTimeout(watchdogTimer); // Cancelar watchdog
     console.error(`[${timestamp()}] ❌ Error en client.initialize(): ${err?.message || err}`);
     console.error(`[${timestamp()}]    Llamá a /reset para limpiar y reintentar.`);
   });
