@@ -47,6 +47,8 @@ const lastMessageByUser = new Map(); // Map<phoneNumber, timestamp>
 let lastQR = null; // Último QR generado (para endpoint /qr)
 let clientReady = false; // true cuando el cliente está autenticado
 let client = null; // Instancia del cliente de WhatsApp
+let isResetting = false; // Lock anti-concurrencia para /reset e initWhatsAppClient
+let isInitializing = false; // Lock anti-concurrencia para initWhatsAppClient
 
 // === Express server (para health check y status) ===
 const app = express();
@@ -145,12 +147,38 @@ app.get("/qr", async (req, res) => {
 //
 // Después de llamarlo, redirige a /qr para que el admin escanee.
 app.get("/reset", async (req, res) => {
+  // === Lock anti-concurrencia ===
+  // Si /reset se llama 2 veces seguidas (ej: doble click, o refresh de la
+  // página anterior que re-dispara el request), la 2da llamada intentaría
+  // inicializar un nuevo cliente Puppeteer mientras el 1ro todavía está
+  // levantando → "The browser is already running for /app/whatsapp-session/session".
+  if (isResetting) {
+    console.log(`[${timestamp()}] ⏭️ /reset ya está en curso — ignorando llamada duplicada`);
+    return res.send(`
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Reset en curso - REP WhatsApp Bot</title>
+    <meta http-equiv="refresh" content="5;url=/qr">
+  </head>
+  <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;margin:0;">
+    <div style="background:white;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);display:inline-block;">
+      <h2 style="color:#3b82f6;margin-top:0;">⏳ Reset en curso</h2>
+      <p style="color:#64748b;">Ya hay un reset en progreso. Redirigiendo a /qr en 5 segundos...</p>
+      <p style="color:#94a3b8;font-size:12px;">Si no se redirige automáticamente, <a href="/qr" style="color:#3b82f6;">hacé clic acá</a>.</p>
+    </div>
+  </body>
+</html>`);
+  }
+
+  isResetting = true;
   try {
     console.log(`[${timestamp()}] 🔄 Reset solicitado — limpiando sesión y reiniciando cliente...`);
 
     // Resetear estado global
     clientReady = false;
     lastQR = null;
+    isInitializing = false; // Permitir que initWhatsAppClient() vuelva a correr
 
     // Destruir el cliente actual de Puppeteer (cierra el browser headless)
     if (client) {
@@ -194,6 +222,14 @@ app.get("/reset", async (req, res) => {
   } catch (err) {
     console.error(`[${timestamp()}] ❌ Error reseteando sesión:`, err?.message || err);
     res.status(500).send("Error reseteando sesión: " + (err?.message || err));
+  } finally {
+    // Liberar el lock después de un tiempo prudencial (10s) para que
+    // initWhatsAppClient() tenga tiempo de completar. No lo liberamos
+    // inmediatamente porque sino un /reset rápido podría entrar antes
+    // de que el lock isInitializing se active dentro de initWhatsAppClient().
+    setTimeout(() => {
+      isResetting = false;
+    }, 10000);
   }
 });
 
@@ -251,7 +287,18 @@ function extractPhoneNumber(from) {
 }
 
 // === Inicializar cliente de WhatsApp Web ===
+// Protegido con lock `isInitializing` para evitar que 2 llamadas
+// concurrentes (ej: /reset spammeado, o evento 'disconnected' que
+// reintenta mientras un /reset está en curso) lancen 2 instancias
+// de Puppeteer con el mismo userDataDir → "browser is already running".
 function initWhatsAppClient() {
+  // === Lock anti-concurrencia ===
+  if (isInitializing) {
+    console.log(`[${timestamp()}] ⏭️ initWhatsAppClient() ya está en curso — ignorando llamada duplicada`);
+    return;
+  }
+  isInitializing = true;
+
   console.log(`[${timestamp()}] 🚀 Inicializando cliente de WhatsApp Web...`);
 
   // === Configuración de Puppeteer optimizada para bajo consumo de RAM ===
@@ -320,6 +367,7 @@ function initWhatsAppClient() {
   // que este evento se dispare correctamente.
   client.on("ready", () => {
     clientReady = true;
+    isInitializing = false; // Liberar lock — la inicialización terminó OK
     console.log(`[${timestamp()}] 🚀 READY: Cliente de WhatsApp 100% activo (clientReady = true)`);
     const info = client.info || {};
     console.log(`[${timestamp()}]    Cuenta: ${info.pushname || "N/A"} (${info.wid?.user || "N/A"})`);
@@ -328,6 +376,7 @@ function initWhatsAppClient() {
   // === Evento: falla de autenticación ===
   client.on("auth_failure", (msg) => {
     clientReady = false;
+    isInitializing = false; // Liberar lock para permitir reintento
     console.error(`[${timestamp()}] ❌ Error de autenticación: ${msg}`);
     console.error(`[${timestamp()}]    Llamá al endpoint /reset para borrar la sesión y volver a escanear el QR.`);
   });
@@ -335,11 +384,12 @@ function initWhatsAppClient() {
   // === Evento: desconexión ===
   client.on("disconnected", (reason) => {
     clientReady = false;
+    isInitializing = false; // Liberar lock para permitir reintento
     console.warn(`[${timestamp()}] 🔌 Cliente desconectado: ${reason}`);
     console.warn(`[${timestamp()}]    Reintentando en 10 segundos...`);
     setTimeout(() => {
       console.log(`[${timestamp()}] 🔄 Reinicializando cliente...`);
-      client.initialize();
+      initWhatsAppClient();
     }, 10000);
   });
 
@@ -352,7 +402,14 @@ function initWhatsAppClient() {
     }
   });
 
-  client.initialize();
+  // === Inicializar con manejo de errores ===
+  // Si initialize() falla (ej: "browser is already running"), liberar el lock
+  // para que un próximo /reset pueda intentar de nuevo.
+  client.initialize().catch((err) => {
+    isInitializing = false;
+    console.error(`[${timestamp()}] ❌ Error en client.initialize(): ${err?.message || err}`);
+    console.error(`[${timestamp()}]    Llamá a /reset para limpiar y reintentar.`);
+  });
 }
 
 // === Manejo principal de mensajes entrantes ===
