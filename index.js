@@ -75,6 +75,49 @@ app.get("/status", (req, res) => {
   });
 });
 
+// GET /debug — diagnóstico avanzado del cliente de WhatsApp
+// Muestra info interna del cliente para detectar si está realmente
+// conectado o si se desconectó silenciosamente.
+app.get("/debug", async (req, res) => {
+  const argTime = formatInTimeZone(new Date(), ARG_TZ, "HH:mm:ss");
+  const debugInfo = {
+    timestamp: argTime,
+    clientReady,
+    isResetting,
+    isInitializing,
+    hasClient: !!client,
+    lastQR: lastQR ? `${lastQR.substring(0, 30)}...` : null,
+    clientInfo: null,
+    connectionState: null,
+    memoryUsage: process.memoryUsage(),
+  };
+
+  // Intentar obtener info interna del cliente de WhatsApp
+  if (client) {
+    try {
+      // client.info contiene datos de la cuenta vinculada
+      debugInfo.clientInfo = {
+        pushname: client.info?.pushname || null,
+        wid: client.info?.wid?.user || null,
+        platform: client.info?.platform || null,
+        phone: client.info?.phone || null,
+      };
+
+      // getBatteryLevel y getState nos dicen si el cliente realmente responde
+      try {
+        const state = await client.getState();
+        debugInfo.connectionState = state;
+      } catch (stateErr) {
+        debugInfo.connectionState = `ERROR: ${stateErr.message}`;
+      }
+    } catch (err) {
+      debugInfo.clientInfo = `ERROR obteniendo info: ${err.message}`;
+    }
+  }
+
+  res.json(debugInfo);
+});
+
 // GET /qr — devuelve el QR como imagen HTML con auto-refresh.
 // La página se actualiza sola cada 12 segundos para mostrar el QR más
 // reciente (WhatsApp invalida el QR a los ~60s). Cuando el cliente ya
@@ -492,12 +535,27 @@ function initWhatsAppClient() {
   });
 
   // === Evento: mensaje entrante ===
+  // Log SIEMPRE que llega un mensaje, incluso si después lo vamos a filtrar.
+  // Esto es clave para diagnóstico: si no vemos este log, el cliente no está
+  // recibiendo mensajes de WhatsApp (problema de conexión).
   client.on("message", async (msg) => {
+    console.log(`[${timestamp()}] 📨 Mensaje entrante de ${msg.from}: "${msg.body?.substring(0, 50) || '[sin texto]'}"`);
     try {
       await handleMessage(msg);
     } catch (err) {
       console.error(`[${timestamp()}] ❌ Error procesando mensaje de ${msg.from}:`, err?.message || err);
     }
+  });
+
+  // === Evento: cualquier evento de cambio de estado ===
+  // Útil para ver si WhatsApp nos manda eventos que no estamos escuchando.
+  client.on("change_state", (state) => {
+    console.log(`[${timestamp()}] 🔄 Estado del cliente cambió: ${state}`);
+  });
+
+  // === Evento: cambio de batería (solo para diagnóstico de conexión) ===
+  client.on("change_battery", (batteryInfo) => {
+    console.log(`[${timestamp()}] 🔋 Battería: ${JSON.stringify(batteryInfo)}`);
   });
 
   // === Inicializar con manejo de errores ===
