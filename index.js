@@ -317,28 +317,73 @@ function initWhatsAppClient() {
 
   console.log(`[${timestamp()}] 🚀 Inicializando cliente de WhatsApp Web...`);
 
-  // === Configuración de Puppeteer optimizada para bajo consumo de RAM ===
-  // Extraída a constante para separar claramente de la config de Client.
-  // Todos los flags apuntan a reducir el consumo de Chromium a < 256MB.
+  // === Configuración de Puppeteer EXTREMADAMENTE optimizada para bajo consumo de RAM ===
+  // Target: < 450MB total (Node + Chromium) para caber en 512MB de Render Free.
+  //
+  // Estrategia:
+  // 1. --single-process: junta renderer + browser + GPU en un solo proceso
+  //    (ahorra ~80MB de overhead de process separation)
+  // 2. --disable-features=site-per-process: no aislar cada site en proceso propio
+  // 3. --js-flags=--max-old-space-size=192: limitar V8 heap a 192MB (en vez de 256)
+  // 4. --disable-background-networking: no hacer requests en background
+  // 5. --disable-renderer-backgrounding: no pausar renderer en background
+  // 6. --disable-background-timer-throttling: no throttle timers
+  // 7. --disable-sync: no sync de Chrome
+  // 8. --disable-translate: no translate
+  // 9. --disable-ipc-flooding-protection: no protection contra IPC flood
+  // 10. --mute-audio: silenciar audio (no lo necesitamos)
+  // 11. --blink-settings=imagesEnabled=false: NO cargar imágenes (ahorra RAM y ancho de banda)
   const puppeteerConfig = {
-    headless: true,
+    headless: true, // headless: true = modo nuevo de Puppeteer (sin 'new')
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
     args: [
+      // === Sandbox / seguridad ===
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage", // OBLIGATORIO para Docker/Render (evita colapsos de memoria compartida)
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-component-update",
-      "--disable-default-apps",
-      "--disable-web-security",
+      "--disable-dev-shm-usage", // OBLIGATORIO para Docker/Render
+      // === Procesos ===
+      "--no-zygote", // No proceso zygote (ahorra ~50MB)
+      "--single-process", // TODO en un solo proceso (ahorra ~80MB)
+      "--disable-features=site-per-process,IsolateOrigins",
       "--disable-site-isolation-trials",
       "--no-experiments",
+      // === GPU / rendering ===
+      "--disable-gpu",
+      "--disable-accelerated-2d-canvas",
+      "--disable-software-rasterizer",
+      // === Network / background ===
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-sync",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-component-extensions-with-background-pages",
+      // === Features que no necesitamos ===
+      "--disable-translate",
+      "--disable-ipc-flooding-protection",
+      "--disable-notifications",
+      "--disable-popup-blocking",
+      "--disable-prompt-on-repost",
+      "--disable-breakpad",
+      "--disable-client-side-phishing-detection",
+      "--disable-domain-reliability",
+      "--disable-hang-monitor",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--mute-audio",
+      // === Memoria V8 (lo más agresivo) ===
+      "--js-flags=--max-old-space-size=192 --max-semi-space-size=8 --max-old-space-size=192",
+      // === No cargar imágenes (ahorra RAM y bandwidth) ===
+      "--blink-settings=imagesEnabled=false",
+      // === Certificados ===
       "--ignore-certificate-errors",
-      "--js-flags=--max-old-space-size=256", // Limita la memoria JavaScript de Chromium a 256MB max
+      "--ignore-certificate-errors-spki-list",
+      "--allow-running-insecure-content",
+      // === Web security off (más rápido) ===
+      "--disable-web-security",
     ],
   };
 
