@@ -371,6 +371,12 @@ function initWhatsAppClient() {
     lastQR = qr;
   });
 
+  // === Evento: pantalla de carga de WhatsApp Web ===
+  // Útil para diagnóstico: nos dice si WhatsApp Web está cargando.
+  client.on("loading_screen", (percent, message) => {
+    console.log(`[${timestamp()}] ⏳ Cargando WhatsApp Web: ${percent}% - ${message}`);
+  });
+
   // === Evento: cliente autenticado (vinculación aceptada en el celular) ===
   client.on("authenticated", () => {
     console.log(`[${timestamp()}] 🔑 AUTENTICADO: Vinculación aceptada en WhatsApp`);
