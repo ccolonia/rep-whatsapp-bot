@@ -180,41 +180,58 @@ app.get("/reset", async (req, res) => {
     lastQR = null;
     isInitializing = false; // Permitir que initWhatsAppClient() vuelva a correr
 
-    // Destruir el cliente actual de Puppeteer (cierra el browser headless)
+    // 1. Destruir el cliente actual de Puppeteer (cierra el browser headless)
     if (client) {
       try {
+        console.log(`[${timestamp()}]   ⏳ Destruyendo cliente...`);
         await client.destroy();
         console.log(`[${timestamp()}]   ✓ Cliente destruido`);
       } catch (e) {
         console.log(`[${timestamp()}]   ⚠️ Error destruyendo cliente (no bloqueante): ${e.message}`);
       }
+      client = null;
     }
 
-    // Eliminar la carpeta de sesión persistente para borrar la sesión trunca
+    // 2. Esperar 2 segundos a que Chromium libere el lock del userDataDir.
+    // Sin este delay, fs.rmSync puede fallar con EBUSY o el próximo
+    // initialize() puede fallar con "browser is already running".
+    console.log(`[${timestamp()}]   ⏳ Esperando 2s a que Chromium libere el lock...`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // 3. Eliminar la carpeta de sesión persistente para borrar la sesión trunca
     const sessionPath = "./whatsapp-session";
     if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-      console.log(`[${timestamp()}]   🗑️ Carpeta de sesión eliminada correctamente`);
+      try {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        console.log(`[${timestamp()}]   🗑️ Carpeta de sesión eliminada correctamente`);
+      } catch (rmErr) {
+        console.log(`[${timestamp()}]   ⚠️ No se pudo eliminar la carpeta (no bloqueante): ${rmErr.message}`);
+        console.log(`[${timestamp()}]      Continuando igual — el nuevo cliente usará la sesión existente.`);
+      }
     } else {
       console.log(`[${timestamp()}]   ℹ️ No había carpeta de sesión previa`);
     }
 
-    // Volver a inicializar el cliente de WhatsApp desde cero
+    // 4. Volver a inicializar el cliente de WhatsApp desde cero.
+    // initWhatsAppClient() es síncrono en su llamada (los eventos son async),
+    // así que devuelve inmediatamente pero el cliente sigue inicializando en background.
     initWhatsAppClient();
 
-    // Responder con HTML que redirige a /qr en 5 segundos (tiempo prudencial
-    // para que el cliente termine de inicializar y genere el primer QR)
+    // 5. Responder con HTML que redirige a /qr en 8 segundos (tiempo prudencial
+    // para que el cliente termine de inicializar y genere el primer QR).
+    // Aumenté de 5s a 8s porque la inicialización con webVersionCache remoto
+    // puede tardar más en el primer arranque (descarga la versión de GitHub).
     res.send(`
 <!DOCTYPE html>
 <html>
   <head>
     <title>Reseteando sesión - REP WhatsApp Bot</title>
-    <meta http-equiv="refresh" content="5;url=/qr">
+    <meta http-equiv="refresh" content="8;url=/qr">
   </head>
   <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;margin:0;">
     <div style="background:white;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);display:inline-block;">
       <h2 style="color:#059669;margin-top:0;">🔄 Sesión reseteada con éxito</h2>
-      <p style="color:#64748b;">Redirigiendo a la página del QR en 5 segundos...</p>
+      <p style="color:#64748b;">Redirigiendo a la página del QR en 8 segundos...</p>
       <p style="color:#94a3b8;font-size:12px;">Si no se redirige automáticamente, <a href="/qr" style="color:#059669;">hacé clic acá</a>.</p>
     </div>
   </body>
@@ -223,13 +240,12 @@ app.get("/reset", async (req, res) => {
     console.error(`[${timestamp()}] ❌ Error reseteando sesión:`, err?.message || err);
     res.status(500).send("Error reseteando sesión: " + (err?.message || err));
   } finally {
-    // Liberar el lock después de un tiempo prudencial (10s) para que
-    // initWhatsAppClient() tenga tiempo de completar. No lo liberamos
-    // inmediatamente porque sino un /reset rápido podría entrar antes
-    // de que el lock isInitializing se active dentro de initWhatsAppClient().
+    // Liberar el lock después de 15s para que initWhatsAppClient() tenga
+    // tiempo de completar la inicialización (incluyendo descarga de
+    // webVersionCache remoto si es la primera vez).
     setTimeout(() => {
       isResetting = false;
-    }, 10000);
+    }, 15000);
   }
 });
 
@@ -511,7 +527,14 @@ if (!WHATSAPP_BOT_SECRET) {
   console.warn(`[${timestamp()}]   Copiá .env.example a .env y configurá las variables.`);
 }
 
-initWhatsAppClient();
+// === Delay inicial de 3s antes de arrancar Puppeteer ===
+// Render puede enviar SIGTERM durante los primeros segundos si el contenedor
+// parece no responder (Puppeteer consume mucha CPU/RAM durante el arranque).
+// Este delay le da tiempo a Render a estabilizar el contenedor y al servidor
+// HTTP a empezar a responder /health antes de que Chromium empiece a chupar RAM.
+setTimeout(() => {
+  initWhatsAppClient();
+}, 3000);
 
 // === Graceful shutdown ===
 process.on("SIGTERM", () => {
