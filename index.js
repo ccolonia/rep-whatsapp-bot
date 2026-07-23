@@ -347,16 +347,26 @@ function initWhatsAppClient() {
       // Guarda la sesión en ./whatsapp-session/ para no pedir QR en cada restart
       dataPath: "./whatsapp-session",
     }),
-    // === webVersionCache: forzar versión ligera y compatible de WhatsApp Web ===
+    // === webVersionCache: forzar versión específica de WhatsApp Web ===
     // SIN esto, whatsapp-web.js intenta cargar la versión actual de WhatsApp Web
     // que a veces cambia su interfaz y los selectores internos no matchean,
     // dejando el cliente colgado en 'authenticated' pero sin disparar 'ready'.
-    // Con esta config, descargamos una versión específica y estable desde
-    // el mirror de wppconnect-team, que mantiene versiones conocidas buenas.
+    //
+    // La versión se elige del mirror público de wppconnect-team:
+    //   https://github.com/wppconnect-team/wa-version/tree/main/html
+    //
+    // IMPORTANTE: la versión debe EXISTIR en ese mirror. Si no existe,
+    // el fetch devuelve 404 y el cliente se queda colgado para siempre.
+    // Listá versiones disponibles con:
+    //   curl -s "https://api.github.com/repos/wppconnect-team/wa-version/contents/html?ref=main" | grep '"name"'
+    //
+    // La versión se puede overridear con la variable de entorno
+    // WA_WEB_VERSION para cambiarla sin redeploy.
     webVersionCache: {
       type: "remote",
       remotePath:
-        "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
+        process.env.WA_WEB_VERSION_URL ||
+        "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1040310160-alpha.html",
     },
     puppeteer: puppeteerConfig,
   });
