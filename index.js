@@ -254,32 +254,48 @@ function extractPhoneNumber(from) {
 function initWhatsAppClient() {
   console.log(`[${timestamp()}] 🚀 Inicializando cliente de WhatsApp Web...`);
 
+  // === Configuración de Puppeteer optimizada para bajo consumo de RAM ===
+  // Extraída a constante para separar claramente de la config de Client.
+  // Todos los flags apuntan a reducir el consumo de Chromium a < 256MB.
+  const puppeteerConfig = {
+    headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage", // OBLIGATORIO para Docker/Render (evita colapsos de memoria compartida)
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-web-security",
+      "--disable-site-isolation-trials",
+      "--no-experiments",
+      "--ignore-certificate-errors",
+      "--js-flags=--max-old-space-size=256", // Limita la memoria JavaScript de Chromium a 256MB max
+    ],
+  };
+
   client = new Client({
     authStrategy: new LocalAuth({
       // Guarda la sesión en ./whatsapp-session/ para no pedir QR en cada restart
       dataPath: "./whatsapp-session",
     }),
-    puppeteer: {
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage", // OBLIGATORIO para Docker/Render (evita colapsos de memoria compartida)
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--no-zygote",
-        "--disable-gpu",
-        "--disable-extensions",
-        "--disable-component-update",
-        "--disable-default-apps",
-        "--disable-web-security",
-        "--disable-site-isolation-trials",
-        "--no-experiments",
-        "--ignore-certificate-errors",
-        "--js-flags=--max-old-space-size=256", // Limita la memoria JavaScript de Chromium a 256MB max
-      ],
+    // === webVersionCache: forzar versión ligera y compatible de WhatsApp Web ===
+    // SIN esto, whatsapp-web.js intenta cargar la versión actual de WhatsApp Web
+    // que a veces cambia su interfaz y los selectores internos no matchean,
+    // dejando el cliente colgado en 'authenticated' pero sin disparar 'ready'.
+    // Con esta config, descargamos una versión específica y estable desde
+    // el mirror de wppconnect-team, que mantiene versiones conocidas buenas.
+    webVersionCache: {
+      type: "remote",
+      remotePath:
+        "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
     },
+    puppeteer: puppeteerConfig,
   });
 
   // === Evento: QR generado (escanear desde el celular) ===
@@ -290,31 +306,37 @@ function initWhatsAppClient() {
     lastQR = qr;
   });
 
-  // === Evento: cliente autenticado ===
+  // === Evento: cliente autenticado (vinculación aceptada en el celular) ===
   client.on("authenticated", () => {
-    console.log(`[${timestamp()}] ✅ WhatsApp autenticado correctamente`);
+    console.log(`[${timestamp()}] 🔑 AUTENTICADO: Vinculación aceptada en WhatsApp`);
+    console.log(`[${timestamp()}]    (esperando que la interfaz termine de cargar para disparar 'ready'...)`);
     lastQR = null; // Ya no necesitamos el QR
   });
 
   // === Evento: cliente listo para recibir mensajes ===
+  // CRÍTICO: este evento es el que dispara clientReady=true. Si nunca se
+  // dispara, el bot queda en estado 'autenticado pero no listo' y no
+  // responde mensajes. El webVersionCache de arriba es lo que garantiza
+  // que este evento se dispare correctamente.
   client.on("ready", () => {
-    console.log(`[${timestamp()}] ✅ Cliente de WhatsApp listo y conectado`);
-    const info = client.info || {};
-    console.log(`[${timestamp()}]   Cuenta: ${info.pushname || "N/A"} (${info.wid?.user || "N/A"})`);
     clientReady = true;
+    console.log(`[${timestamp()}] 🚀 READY: Cliente de WhatsApp 100% activo (clientReady = true)`);
+    const info = client.info || {};
+    console.log(`[${timestamp()}]    Cuenta: ${info.pushname || "N/A"} (${info.wid?.user || "N/A"})`);
   });
 
   // === Evento: falla de autenticación ===
   client.on("auth_failure", (msg) => {
-    console.error(`[${timestamp()}] ❌ Falló la autenticación de WhatsApp: ${msg}`);
-    console.error(`[${timestamp()}]   Eliminá la carpeta whatsapp-session/ y reiniciá para volver a escanear el QR.`);
+    clientReady = false;
+    console.error(`[${timestamp()}] ❌ Error de autenticación: ${msg}`);
+    console.error(`[${timestamp()}]    Llamá al endpoint /reset para borrar la sesión y volver a escanear el QR.`);
   });
 
   // === Evento: desconexión ===
   client.on("disconnected", (reason) => {
-    console.warn(`[${timestamp()}] ⚠️ Cliente desconectado: ${reason}`);
-    console.warn(`[${timestamp()}]   Reintentando en 10 segundos...`);
     clientReady = false;
+    console.warn(`[${timestamp()}] 🔌 Cliente desconectado: ${reason}`);
+    console.warn(`[${timestamp()}]    Reintentando en 10 segundos...`);
     setTimeout(() => {
       console.log(`[${timestamp()}] 🔄 Reinicializando cliente...`);
       client.initialize();
